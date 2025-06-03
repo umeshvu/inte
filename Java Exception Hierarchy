@@ -1,0 +1,20 @@
+java.lang.Object  
+└── java.lang.Throwable
+    ├── java.lang.Error          ← Unrecoverable (JVM-related issues)
+    │   ├── OutOfMemoryError
+    │   └── StackOverflowError
+    │
+    └── java.lang.Exception      ← Recoverable (your code can handle these)
+        ├── Checked Exceptions   ← Must be declared or handled
+        │   ├── IOException
+        │   │   └── FileNotFoundException
+        │   ├── SQLException
+        │   └── ParseException
+        │
+        └── java.lang.RuntimeException   ← Unchecked Exceptions (your code's fault)
+            ├── NullPointerException
+            ├── ArithmeticException
+            ├── ArrayIndexOutOfBoundsException
+            ├── IllegalArgumentException
+            ├── ClassCastException
+            └── NumberFormatException
