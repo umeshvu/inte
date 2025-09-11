@@ -1,0 +1,164 @@
+package com.testinngjava.shfiletesting;
+
+import org.junit.jupiter.api.*;
+import java.io.*;
+import java.nio.file.*;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+class FinalShScriptTest {
+
+    private static final Path TARGET_DIR = Paths.get("target/finalsh-tests");
+    private static final Path SCRIPT = Paths.get("scripts/final.sh");
+
+    @BeforeEach
+    void setup() throws IOException {
+        if (Files.exists(TARGET_DIR)) {
+            deleteRecursively(TARGET_DIR);
+        }
+        Files.createDirectories(TARGET_DIR);
+    }
+
+    private void deleteRecursively(Path path) throws IOException {
+        if (Files.notExists(path)) return;
+        if (Files.isDirectory(path)) {
+            try (var stream = Files.list(path)) {
+                for (Path entry : stream.toArray(Path[]::new)) {
+                    deleteRecursively(entry);
+                }
+            }
+        }
+        Files.deleteIfExists(path);
+    }
+
+    private ProcessResult runScript(Path workingDir, String... env) throws Exception {
+        ProcessBuilder pb = new ProcessBuilder("bash", SCRIPT.toAbsolutePath().toString());
+        pb.directory(workingDir.toFile());
+        pb.environment().putAll(System.getenv()); // inherit env
+        for (String e : env) {
+            String[] kv = e.split("=", 2);
+            pb.environment().put(kv[0], kv[1]);
+        }
+        pb.redirectErrorStream(true);
+        Process p = pb.start();
+
+        StringBuilder output = new StringBuilder();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append("\n");
+            }
+        }
+        int exit = p.waitFor();
+        return new ProcessResult(exit, output.toString());
+    }
+
+    // Plain old Java object instead of record (for Java 11)
+    static class ProcessResult {
+        final int exitCode;
+        final String output;
+        ProcessResult(int exitCode, String output) {
+            this.exitCode = exitCode;
+            this.output = output;
+        }
+        int getExitCode() { return exitCode; }
+        String getOutput() { return output; }
+    }
+
+    // ===============================
+    // TEST CASES
+    // ===============================
+
+    @Test
+    void testMissingArchiveDir() throws Exception {
+        Path filter = TARGET_DIR.resolve("filter.csv");
+        Files.writeString(filter, "id,2024-01-01\n");
+
+        ProcessResult result = runScript(TARGET_DIR,
+                "FILTER_FILE=" + filter.toAbsolutePath(),
+                "ARCHIVE_DIR=" + TARGET_DIR.resolve("archive").toAbsolutePath(),
+                "REMIGRATION_DIR=" + TARGET_DIR.resolve("remigration").toAbsolutePath());
+
+        assertThat(result.getExitCode()).isEqualTo(1);
+        assertThat(result.getOutput()).contains("ERROR: Archive directory not found");
+    }
+
+    @Test
+    void testMissingFilterFile() throws Exception {
+        Path archive = TARGET_DIR.resolve("archive");
+        Files.createDirectories(archive);
+
+        ProcessResult result = runScript(TARGET_DIR,
+                "FILTER_FILE=" + TARGET_DIR.resolve("missing.csv").toAbsolutePath(),
+                "ARCHIVE_DIR=" + archive.toAbsolutePath(),
+                "REMIGRATION_DIR=" + TARGET_DIR.resolve("remigration").toAbsolutePath());
+
+        assertThat(result.getExitCode()).isEqualTo(1);
+        assertThat(result.getOutput()).contains("ERROR: Filter file not found");
+    }
+
+    @Test
+    void testEmptyFilterFile() throws Exception {
+        Path archive = TARGET_DIR.resolve("archive");
+        Files.createDirectories(archive);
+        Path filter = TARGET_DIR.resolve("filter.csv");
+        Files.writeString(filter, "id,\n"); // no date present
+
+        ProcessResult result = runScript(TARGET_DIR,
+                "FILTER_FILE=" + filter.toAbsolutePath(),
+                "ARCHIVE_DIR=" + archive.toAbsolutePath(),
+                "REMIGRATION_DIR=" + TARGET_DIR.resolve("remigration").toAbsolutePath());
+
+        assertThat(result.getExitCode()).isEqualTo(1);
+        assertThat(result.getOutput()).contains("ERROR: No cycle dates found");
+    }
+
+    @Test
+    void testNoMatchingFiles() throws Exception {
+        Path archive = TARGET_DIR.resolve("archive");
+        Files.createDirectories(archive);
+        Path filter = TARGET_DIR.resolve("filter.csv");
+        Files.writeString(filter, "id,2020-01-01\n"); // very old date
+
+        // add file outside the range
+        Files.writeString(archive.resolve("file_19990101.txt"), "old file");
+
+        ProcessResult result = runScript(TARGET_DIR,
+                "FILTER_FILE=" + filter.toAbsolutePath(),
+                "ARCHIVE_DIR=" + archive.toAbsolutePath(),
+                "REMIGRATION_DIR=" + TARGET_DIR.resolve("remigration").toAbsolutePath());
+
+        assertThat(result.getExitCode()).isEqualTo(0);
+        assertThat(result.getOutput()).contains("No files matched the date range.");
+
+        // filter.csv should be moved into archive
+        assertThat(Files.exists(archive.resolve("filter.csv"))).isTrue();
+    }
+
+    @Test
+    void testFilesCopiedSuccessfully() throws Exception {
+        Path archive = TARGET_DIR.resolve("archive");
+        Files.createDirectories(archive);
+        Path filter = TARGET_DIR.resolve("filter.csv");
+        Files.writeString(filter, "id,2024-01-01\n"); // earliest cycle date
+
+        // add file within the valid range
+        Path f1 = archive.resolve("data_20250101.txt");
+        Files.writeString(f1, "inside range");
+
+        ProcessResult result = runScript(TARGET_DIR,
+                "FILTER_FILE=" + filter.toAbsolutePath(),
+                "ARCHIVE_DIR=" + archive.toAbsolutePath(),
+                "REMIGRATION_DIR=" + TARGET_DIR.resolve("remigration").toAbsolutePath());
+
+        assertThat(result.getExitCode()).isEqualTo(0);
+        assertThat(result.getOutput()).contains("files copied");
+
+        // verify file copied to remigration dir
+        Path copied = TARGET_DIR.resolve("remigration/data_20250101.txt");
+        assertThat(Files.exists(copied)).isTrue();
+
+        // filter.csv should be moved into archive
+        assertThat(Files.exists(archive.resolve("filter.csv"))).isTrue();
+    }
+}
